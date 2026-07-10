@@ -1,8 +1,10 @@
 <div align="center">
 
-# 🌒 ShadowSwap
+<img src="public/logo.svg" alt="ShadowSwap" width="460" />
 
 ### Confidential batched swaps on public Uniswap — powered by iExec Nox
+
+**🔗 Live on Sepolia:** [`0x037D0Ea2dBD362D3dc186f6311591D969b9522e0`](https://sepolia.etherscan.io/address/0x037D0Ea2dBD362D3dc186f6311591D969b9522e0)
 
 Private swaps on transparent infrastructure. Deposit into a Nox confidential
 vault, submit an **encrypted** swap order, and a Trusted Execution Environment
