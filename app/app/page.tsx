@@ -11,7 +11,7 @@ import {
   useReadContract,
   useWalletClient,
 } from "wagmi";
-import { parseUnits, formatUnits, erc20Abi, maxUint256 } from "viem";
+import { parseUnits, parseEther, formatUnits, erc20Abi, maxUint256 } from "viem";
 import { shadowSwapVaultAbi } from "@/lib/abi";
 import {
   VAULT_ADDRESS,
@@ -30,6 +30,7 @@ import {
   EyeIcon,
   SendIcon,
   LayersIcon,
+  BoltIcon,
 } from "@/components/Icons";
 
 const vault = { address: VAULT_ADDRESS as `0x${string}`, abi: shadowSwapVaultAbi };
@@ -288,6 +289,27 @@ function DepositCard() {
   const { writeContractAsync } = useWriteContract();
   const ensureSepolia = useSepoliaGuard();
   const disabled = !isConnected || !isVaultConfigured || !amount;
+  const noAmount = !isConnected || !amount;
+
+  async function wrap() {
+    try {
+      setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted…" });
+      await ensureSepolia();
+      setStatus({ kind: "pending", msg: `Wrapping ${amount} ETH → WETH…` });
+      await writeContractAsync({
+        chainId: SEPOLIA_CHAIN_ID,
+        address: TOKEN_IN.address,
+        abi: [
+          { type: "function", name: "deposit", stateMutability: "payable", inputs: [], outputs: [] },
+        ],
+        functionName: "deposit",
+        value: parseEther(amount),
+      });
+      setStatus({ kind: "ok", msg: `Wrapped ${amount} ETH. Now Approve + Deposit.` });
+    } catch (e) {
+      setStatus({ kind: "err", msg: (e as Error).message.split("\n")[0] });
+    }
+  }
 
   async function approve() {
     try {
@@ -339,7 +361,15 @@ function DepositCard() {
         symbol={TOKEN_IN.symbol}
         label="Amount to pool"
       />
-      <div className="mt-4 flex gap-3">
+      <button
+        onClick={wrap}
+        disabled={noAmount}
+        className="clay-btn-ghost mt-4 w-full text-sm disabled:opacity-40"
+      >
+        <BoltIcon className="h-4 w-4 text-cyan-glow" />
+        Need WETH? Wrap {amount || "0"} ETH → WETH
+      </button>
+      <div className="mt-3 flex gap-3">
         <button onClick={approve} disabled={disabled} className="clay-btn-ghost flex-1 disabled:opacity-40">
           Approve
         </button>
