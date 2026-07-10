@@ -40,6 +40,17 @@ function short(a?: string) {
   return a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "";
 }
 
+/** Ensures the wallet is on Sepolia before a transaction; switches if not. */
+function useSepoliaGuard() {
+  const { chainId } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
+  return async function ensureSepolia() {
+    if (chainId !== SEPOLIA_CHAIN_ID) {
+      await switchChainAsync({ chainId: SEPOLIA_CHAIN_ID });
+    }
+  };
+}
+
 export default function AppPage() {
   const { address, isConnected, chainId } = useAccount();
   const wrongNetwork = isConnected && chainId !== SEPOLIA_CHAIN_ID;
@@ -200,14 +211,23 @@ function ConfigBanner() {
 }
 
 function NetworkBanner() {
+  const { switchChain, isPending } = useSwitchChain();
   return (
-    <div className="clay-inset mb-6 flex items-center gap-3 p-5 text-sm">
-      <LayersIcon className="h-5 w-5 shrink-0 text-pink-glow" />
-      <p className="text-ink-muted">
-        You&apos;re on the wrong network. Switch to{" "}
-        <span className="font-semibold text-ink">Ethereum Sepolia</span> to use
-        ShadowSwap.
-      </p>
+    <div className="clay-inset mb-6 flex flex-col items-start gap-3 p-5 text-sm sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center gap-3">
+        <LayersIcon className="h-5 w-5 shrink-0 text-pink-glow" />
+        <p className="text-ink-muted">
+          You&apos;re on the wrong network. ShadowSwap runs on{" "}
+          <span className="font-semibold text-ink">Ethereum Sepolia</span>.
+        </p>
+      </div>
+      <button
+        onClick={() => switchChain({ chainId: SEPOLIA_CHAIN_ID })}
+        disabled={isPending}
+        className="clay-btn !px-5 !py-2.5 text-sm disabled:opacity-60"
+      >
+        {isPending ? "Switching…" : "Switch to Sepolia"}
+      </button>
     </div>
   );
 }
@@ -217,11 +237,13 @@ function NetworkBanner() {
 function EpochStatus() {
   const { data: epoch } = useReadContract({
     ...vault,
+    chainId: SEPOLIA_CHAIN_ID,
     functionName: "currentEpoch",
     query: { enabled: isVaultConfigured, refetchInterval: 8000 },
   });
   const { data: orders } = useReadContract({
     ...vault,
+    chainId: SEPOLIA_CHAIN_ID,
     functionName: "ordersInEpoch",
     args: [epoch ?? 0n],
     query: { enabled: isVaultConfigured && epoch !== undefined },
@@ -264,12 +286,16 @@ function DepositCard() {
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const { writeContractAsync } = useWriteContract();
+  const ensureSepolia = useSepoliaGuard();
   const disabled = !isConnected || !isVaultConfigured || !amount;
 
   async function approve() {
     try {
+      setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted…" });
+      await ensureSepolia();
       setStatus({ kind: "pending", msg: "Approving WETH…" });
       await writeContractAsync({
+        chainId: SEPOLIA_CHAIN_ID,
         address: TOKEN_IN.address,
         abi: erc20Abi,
         functionName: "approve",
@@ -283,9 +309,12 @@ function DepositCard() {
 
   async function deposit() {
     try {
+      setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted…" });
+      await ensureSepolia();
       setStatus({ kind: "pending", msg: "Depositing…" });
       await writeContractAsync({
         ...vault,
+        chainId: SEPOLIA_CHAIN_ID,
         functionName: "deposit",
         args: [parseUnits(amount, TOKEN_IN.decimals)],
       });
@@ -331,11 +360,14 @@ function PrivateSwapCard() {
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const { writeContractAsync } = useWriteContract();
+  const ensureSepolia = useSepoliaGuard();
   const disabled = !isConnected || !isVaultConfigured || !amount;
 
   async function submit() {
     if (!walletClient) return;
     try {
+      setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted…" });
+      await ensureSepolia();
       setStatus({ kind: "pending", msg: "Encrypting order client-side…" });
       const raw = parseUnits(amount, TOKEN_IN.decimals);
       const { handle, handleProof } = await encryptAmount(
@@ -346,6 +378,7 @@ function PrivateSwapCard() {
       setStatus({ kind: "pending", msg: "Submitting encrypted order…" });
       await writeContractAsync({
         ...vault,
+        chainId: SEPOLIA_CHAIN_ID,
         functionName: "submitOrder",
         args: [handle, handleProof],
       });
@@ -398,14 +431,17 @@ function BalancesCard() {
   const [out, setOut] = useState<string>();
   const [status, setStatus] = useState<Status>({ kind: "idle" });
 
+  const ensureSepolia = useSepoliaGuard();
   const { data: depositHandle } = useReadContract({
     ...vault,
+    chainId: SEPOLIA_CHAIN_ID,
     functionName: "myDepositHandle",
     account: address,
     query: { enabled: isVaultConfigured && isConnected },
   });
   const { data: outHandle } = useReadContract({
     ...vault,
+    chainId: SEPOLIA_CHAIN_ID,
     functionName: "myOutHandle",
     account: address,
     query: { enabled: isVaultConfigured && isConnected },
@@ -414,6 +450,8 @@ function BalancesCard() {
   async function reveal() {
     if (!walletClient) return;
     try {
+      setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted…" });
+      await ensureSepolia();
       setStatus({ kind: "pending", msg: "Decrypting your handles…" });
       if (depositHandle) {
         const v = await decryptHandle(walletClient, depositHandle as `0x${string}`);
@@ -471,11 +509,18 @@ function ClaimCard() {
   const { isConnected } = useAccount();
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const { writeContractAsync } = useWriteContract();
+  const ensureSepolia = useSepoliaGuard();
 
   async function requestClaim() {
     try {
+      setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted…" });
+      await ensureSepolia();
       setStatus({ kind: "pending", msg: "Requesting claim reveal…" });
-      await writeContractAsync({ ...vault, functionName: "requestClaim" });
+      await writeContractAsync({
+        ...vault,
+        chainId: SEPOLIA_CHAIN_ID,
+        functionName: "requestClaim",
+      });
       setStatus({
         kind: "ok",
         msg: "Reveal requested. Keeper finalizes your withdrawal.",
@@ -515,11 +560,18 @@ function KeeperCard() {
   const { isConnected } = useAccount();
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const { writeContractAsync } = useWriteContract();
+  const ensureSepolia = useSepoliaGuard();
 
   async function requestSettlement() {
     try {
+      setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted…" });
+      await ensureSepolia();
       setStatus({ kind: "pending", msg: "Marking aggregate decryptable…" });
-      await writeContractAsync({ ...vault, functionName: "requestSettlement" });
+      await writeContractAsync({
+        ...vault,
+        chainId: SEPOLIA_CHAIN_ID,
+        functionName: "requestSettlement",
+      });
       setStatus({ kind: "ok", msg: "Aggregate revealed. Run settle off-chain." });
     } catch (e) {
       setStatus({ kind: "err", msg: (e as Error).message.split("\n")[0] });
