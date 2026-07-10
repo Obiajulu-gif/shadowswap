@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   useAccount,
@@ -79,12 +79,39 @@ export default function AppPage() {
 /* ───────────────────────── Top bar / wallet ───────────────────────── */
 
 function TopBar() {
-  const { address, isConnected } = useAccount();
-  const { connect, connectors, isPending } = useConnect();
+  const { address, isConnected, chainId } = useAccount();
+  const { connect, connectors, isPending, error } = useConnect();
   const { disconnect } = useDisconnect();
   const { switchChain } = useSwitchChain();
-  const { chainId } = useAccount();
-  const injected = connectors[0];
+  const [mounted, setMounted] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  // De-dupe discovered wallets (EIP-6963 can surface several) by name.
+  const wallets = connectors.filter(
+    (c, i, arr) => arr.findIndex((x) => x.name === c.name) === i
+  );
+  const hasProvider =
+    typeof window !== "undefined" && Boolean((window as { ethereum?: unknown }).ethereum);
+
+  function pick(connector: (typeof connectors)[number]) {
+    setShowPicker(false);
+    connect({ connector });
+  }
+
+  function onConnectClick() {
+    if (wallets.length > 1) {
+      setShowPicker((s) => !s);
+      return;
+    }
+    const only = wallets[0];
+    // No wallet at all → send them to install MetaMask.
+    if (!only || (!hasProvider && only.type === "injected")) {
+      window.open("https://metamask.io/download/", "_blank", "noopener");
+      return;
+    }
+    pick(only);
+  }
 
   return (
     <header className="sticky top-0 z-50 pt-4">
@@ -98,7 +125,7 @@ function TopBar() {
           </Link>
 
           <div className="flex items-center gap-2">
-            {isConnected && chainId !== SEPOLIA_CHAIN_ID && (
+            {mounted && isConnected && chainId !== SEPOLIA_CHAIN_ID && (
               <button
                 onClick={() => switchChain({ chainId: SEPOLIA_CHAIN_ID })}
                 className="clay-btn-ghost !px-4 !py-2.5 text-sm text-pink-glow"
@@ -106,7 +133,8 @@ function TopBar() {
                 Switch to Sepolia
               </button>
             )}
-            {isConnected ? (
+
+            {mounted && isConnected ? (
               <button
                 onClick={() => disconnect()}
                 className="clay-btn-ghost !px-4 !py-2.5 text-sm"
@@ -115,14 +143,37 @@ function TopBar() {
                 {short(address)}
               </button>
             ) : (
-              <button
-                onClick={() => injected && connect({ connector: injected })}
-                disabled={isPending}
-                className="clay-btn !px-5 !py-2.5 text-sm"
-              >
-                <WalletIcon className="h-4 w-4" />
-                {isPending ? "Connecting…" : "Connect Wallet"}
-              </button>
+              <div className="relative">
+                <button
+                  onClick={onConnectClick}
+                  disabled={isPending}
+                  className="clay-btn !px-5 !py-2.5 text-sm disabled:opacity-60"
+                >
+                  <WalletIcon className="h-4 w-4" />
+                  {isPending ? "Connecting…" : "Connect Wallet"}
+                </button>
+
+                {showPicker && wallets.length > 1 && (
+                  <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-clay-sm bg-clay-base p-2 shadow-clay">
+                    {wallets.map((c) => (
+                      <button
+                        key={c.uid}
+                        onClick={() => pick(c)}
+                        className="flex w-full items-center gap-2 rounded-clay-sm px-4 py-3 text-left text-sm text-ink transition-colors hover:bg-clay-light"
+                      >
+                        <WalletIcon className="h-4 w-4 text-cyan-glow" />
+                        {c.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {error && (
+                  <p className="absolute right-0 top-full mt-2 w-64 rounded-clay-sm bg-clay-base p-3 text-xs text-pink-glow shadow-clay-sm">
+                    {error.message.split("\n")[0]}
+                  </p>
+                )}
+              </div>
             )}
           </div>
         </nav>
