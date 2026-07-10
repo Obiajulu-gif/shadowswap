@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-night-900 text-ink font-sans antialiased;
+    min-height: 100vh;
+    background-color: #08061a;
+    background-image:
+      radial-gradient(60rem 60rem at 12% -12%, rgba(124, 92, 255, 0.20), transparent 60%),
+      radial-gradient(52rem 52rem at 105% 15%, rgba(55, 229, 255, 0.14), transparent 55%),
+      radial-gradient(44rem 44rem at 50% 118%, rgba(255, 92, 168, 0.12), transparent 60%);
+    background-attachment: fixed;
+  }
+
+  ::selection {
+    background: rgba(124, 92, 255, 0.35);
+    color: #ffffff;
+  }
+}
+
+@layer components {
+  /* Puffy clay surface — the signature ShadowSwap material */
+  .clay-card {
+    @apply rounded-clay bg-clay-base shadow-clay;
+  }
+
+  .clay-panel {
+    @apply rounded-clay-lg bg-clay-light shadow-clay;
+  }
+
+  /* Pressed-in clay (for input wells, "what the chain sees", etc.) */
+  .clay-inset {
+    @apply rounded-clay bg-clay-dark shadow-clay-inset;
+  }
+
+  .clay-btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-clay-sm px-6 py-3 font-display font-semibold text-white transition-transform duration-200;
+    background-image: linear-gradient(135deg, #7c5cff 0%, #37e5ff 100%);
+    box-shadow:
+      8px 10px 30px rgba(124, 92, 255, 0.4),
+      inset -3px -3px 8px rgba(20, 10, 60, 0.4),
+      inset 4px 4px 10px rgba(255, 255, 255, 0.32);
+  }
+  .clay-btn:hover {
+    transform: translateY(-2px);
+  }
+  .clay-btn:active {
+    transform: translateY(1px);
+  }
+
+  .clay-btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-clay-sm bg-clay-light px-6 py-3 font-display font-semibold text-ink shadow-clay-sm transition-transform duration-200;
+  }
+  .clay-btn-ghost:hover {
+    transform: translateY(-2px);
+  }
+
+  .clay-chip {
+    @apply inline-flex items-center gap-2 rounded-full bg-clay-light px-4 py-2 text-sm font-medium text-ink-muted shadow-clay-sm;
+  }
+
+  .clay-icon {
+    @apply flex h-14 w-14 shrink-0 items-center justify-center rounded-clay-sm bg-clay-light text-cyan-glow shadow-clay-sm;
+  }
+
+  .gradient-text {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(120deg, #b7a6ff 0%, #37e5ff 55%, #ff8fd0 100%);
+  }
+
+  .section-shell {
+    @apply mx-auto w-full max-w-6xl px-5 sm:px-8;
+  }
+}
