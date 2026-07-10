@@ -92,12 +92,17 @@ npm run deploy:sepolia
 ## 🗺️ Roadmap (build phases)
 
 - [x] **Phase 0** — Setup & recon (env, addresses, scaffold) → `docs/phase-0-recon.md`
-- [x] **Phase 1** — Confidential contract design → `docs/design.md` + skeleton
-- [ ] **Phase 2** — Implement the vault on the real Nox library + tests
-- [ ] **Phase 3** — Frontend swap flow (deposit → encrypted order → settle)
-- [ ] **Phase 4** — End-to-end testing on Sepolia (multi-wallet batch)
-- [ ] **Phase 5** — Deploy (contracts → Sepolia, frontend → Vercel)
-- [ ] **Phase 6** — README polish, `feedback.md`, 4-min demo video, X post
+- [x] **Phase 1** — Confidential contract design → `docs/design.md`
+- [x] **Phase 2** — Vault implemented on the **real** `@iexec-nox` Solidity SDK; **compiles** (solc 0.8.35) → `contracts/contracts/ShadowSwapVault.sol`
+- [x] **Phase 3** — Functional frontend swap flow (deposit → encrypted order → reveal → claim), wired with `@iexec-nox/handle`; **`next build` passes** → `app/app/page.tsx`
+- [x] **Phase 4** — Deploy pipeline verified (Ignition deploy + constructor args); readiness documented → `docs/deploy.md`
+- [ ] **Phase 5** — Live deploy: contracts → Sepolia (funded key), frontend → Vercel, seed Uniswap liquidity
+- [ ] **Phase 6** — `feedback.md` polish, 4-min demo video, X post tagging @iEx_ec
+
+> Verified locally: `cd contracts && npm run compile` (green), root `npm run build` (green),
+> `npx hardhat ignition deploy ignition/modules/ShadowSwap.ts` (deploys). See
+> [`docs/deploy.md`](docs/deploy.md) for what a live end-to-end run additionally needs
+> (funded key, Nox offchain Docker stack, pool liquidity).
 
 ## 🧾 Hackathon
 

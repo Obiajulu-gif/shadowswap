@@ -36,6 +36,9 @@ yarn-error.log*
 contracts/node_modules
 contracts/artifacts
 contracts/cache
+contracts/types
 contracts/typechain-types
 contracts/coverage
+contracts/dist
+contracts/ignition/deployments
 contracts/.env

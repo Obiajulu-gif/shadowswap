@@ -41,12 +41,42 @@
 - Document **ACL lifecycle best practices** (when to grant/revoke decrypt rights).
 - Note gotchas for **integer/rounding** in encrypted pro-rata math.
 
-## Phase 2+ (implementation) — _to be filled in_
+## Phase 2–3 (implementation)
 
-- cDeFi Wizard output quality: _TBD_
-- Nox Hardhat plugin DX (compile/deploy): _TBD_
-- JS SDK encryption ergonomics on the frontend: _TBD_
-- Testing confidential contracts locally: _TBD_
+### What worked well
+- **`Nox.sol` is genuinely ergonomic.** Writing the vault felt like normal
+  Solidity: `Nox.fromExternal(externalEuint256, proof)`, `Nox.add/sub/mul/div`,
+  `Nox.le` + `Nox.select` for branch-free clamping, `Nox.allow/allowThis` for
+  ACLs, and `Nox.allowPublicDecryption` to reveal just an aggregate. The whole
+  "reveal the sum, hide the addends" pattern we needed dropped out naturally.
+- **It compiled first try against the real libraries** (solc 0.8.35) once we
+  matched the Hardhat 3 example project. `ERC7984` + the `ERC20ToERC7984Wrapper`
+  are a great base — more confidential DeFi is possible than we expected.
+- **The handle JS SDK is clean**: `createViemHandleClient(walletClient)` then
+  `encryptInput(amount, "uint256", vaultAddr)` returns exactly the
+  `{ handle, handleProof }` that `submitOrder(externalEuint256, bytes)` wants.
+  `resolveNetworkConfig(chainId)` meant zero manual gateway wiring for Sepolia.
+
+### Friction / papercuts
+- **`encryptInput` takes the plaintext type (`"uint256"`), not `"euint256"`.**
+  Intuitive in hindsight, but the type name collision cost us a build cycle. One
+  line in the README example would prevent this.
+- **`@iexec-nox/handle` pulls `ethers` via its index** even if you only use the
+  viem client, so a viem-only Next.js app must still install `ethers` or the
+  build fails on module resolution. Splitting the ethers/viem factories into
+  separate entrypoints (or making `ethers` optional) would keep viem apps lean.
+- **Hardhat 3 + local E2E requires Docker** (KMS/ingestor/runner/gateway/NATS/S3
+  via the plugin). Powerful, but heavy for a quick hackathon loop — a hosted
+  shared testnet gateway (which Sepolia effectively is) is the faster path, and
+  worth signposting earlier in the docs.
+- Discovering the package names (`nox-protocol-contracts`,
+  `nox-confidential-contracts`, `handle`) still meant reading the plugin repo;
+  the earlier "cheat-sheet" ask stands.
+
+## Phase 4 (deploy)
+- Deploying to a local chain via **Ignition worked immediately**; constructor-only
+  deploy needs no NoxCompute, and `Nox.noxComputeContract()` already hard-codes
+  Sepolia (`0x24Ef…77bF`), so Sepolia deployment is friction-free. 👍
 
 ---
 

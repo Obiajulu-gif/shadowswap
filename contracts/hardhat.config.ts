@@ -1,32 +1,29 @@
-import { HardhatUserConfig } from "hardhat/config";
-import "@nomicfoundation/hardhat-toolbox";
-import * as dotenv from "dotenv";
+import "dotenv/config";
+import { defineConfig } from "hardhat/config";
+import hardhatToolboxViem from "@nomicfoundation/hardhat-toolbox-viem";
 
-// In Phase 2, add the Nox plugin here:
-//   import "@iexec-nox/hardhat-plugin";
-// (scaffolded from https://github.com/iExec-Nox/nox-hardhat-starter)
+// NoxCompute is already deployed on Ethereum Sepolia (see Nox.sol:
+// 0x24Ef36Ec5b626D7DCD09a98F3083c2758F0F77bF), so confidential contracts can be
+// deployed straight to Sepolia. Local end-to-end testing additionally needs the
+// Nox offchain stack via @iexec-nox/nox-hardhat-plugin (Docker) — see README.
 
-dotenv.config();
+const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL ?? "https://rpc.sepolia.org";
+const PRIVATE_KEY = process.env.PRIVATE_KEY;
 
-const { PRIVATE_KEY, SEPOLIA_RPC_URL, ETHERSCAN_API_KEY } = process.env;
-
-const config: HardhatUserConfig = {
+export default defineConfig({
+  plugins: [hardhatToolboxViem],
   solidity: {
-    version: "0.8.24",
+    version: "0.8.35",
     settings: {
       optimizer: { enabled: true, runs: 200 },
     },
   },
   networks: {
     sepolia: {
-      url: SEPOLIA_RPC_URL || "https://rpc.sepolia.org",
+      type: "http",
+      url: SEPOLIA_RPC_URL,
       accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
       chainId: 11155111,
     },
   },
-  etherscan: {
-    apiKey: ETHERSCAN_API_KEY || "",
-  },
-};
-
-export default config;
+});

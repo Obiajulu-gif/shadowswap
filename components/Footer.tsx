@@ -19,10 +19,10 @@ export default function Footer() {
           </div>
 
           <div className="flex flex-col gap-3">
-            <button className="clay-btn">
+            <a href="/app" className="clay-btn">
               Launch App
               <ArrowRightIcon className="h-5 w-5" />
-            </button>
+            </a>
             <a
               href="https://github.com/Obiajulu-gif/shadowswap"
               target="_blank"

@@ -41,11 +41,11 @@ export default function Navbar() {
             >
               <GithubIcon className="h-5 w-5" />
             </a>
-            <button className="clay-btn !px-4 !py-2.5 text-sm sm:!px-5">
+            <a href="/app" className="clay-btn !px-4 !py-2.5 text-sm sm:!px-5">
               <WalletIcon className="h-4 w-4" />
-              <span className="hidden sm:inline">Connect Wallet</span>
-              <span className="sm:hidden">Connect</span>
-            </button>
+              <span className="hidden sm:inline">Launch App</span>
+              <span className="sm:hidden">App</span>
+            </a>
           </div>
         </nav>
       </div>

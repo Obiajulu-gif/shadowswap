@@ -1,31 +1,9 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.35;
 
-/**
- * ┌───────────────────────────────────────────────────────────────────────────┐
- * │  ShadowSwapVault — Phase 1 DESIGN SKELETON                                  │
- * │                                                                            │
- * │  This file captures the confidential-contract DESIGN for ShadowSwap. It    │
- * │  documents state, the public/private boundary, and function signatures.    │
- * │  The encrypted types below (euint*) and the Nox library import are         │
- * │  PLACEHOLDERS — they are wired to the real Nox privacy primitives in       │
- * │  Phase 2 after scaffolding from `nox-hardhat-starter`. Do not expect this  │
- * │  to compile as-is; it is the spec made executable-shaped on purpose.       │
- * │                                                                            │
- * │  Privacy model (see docs/design.md):                                       │
- * │   • euint* values are HANDLES — pointers to data encrypted off-chain in a  │
- * │     TEE. Plaintext never appears on-chain.                                 │
- * │   • Only the AGGREGATE net swap per epoch is public. Per-user amounts,     │
- * │     direction and balances stay confidential.                             │
- * │   • Uniswap is called UNMODIFIED — privacy is layered on top.             │
- * └───────────────────────────────────────────────────────────────────────────┘
- */
-
-// Phase 2: replace with the real Nox Solidity library, e.g.
-//   import { euint128, ebool, Nox } from "@iexec-nox/solidity";
-// Placeholder aliases so the design reads clearly:
-type euint128 is uint256; // encrypted uint handle
-type ebool is uint256; // encrypted bool handle
+import {Nox, euint256, externalEuint256, ebool} from "@iexec-nox/nox-protocol-contracts/contracts/sdk/Nox.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @dev Minimal Uniswap v3 SwapRouter02 surface used at settlement.
 interface ISwapRouter02 {
@@ -52,106 +30,147 @@ interface IERC20 {
     function balanceOf(address account) external view returns (uint256);
 }
 
-contract ShadowSwapVault {
-    // ──────────────────────────────────────────────────────────────────────
-    // Configuration (public — these are just addresses)
-    // ──────────────────────────────────────────────────────────────────────
-    ISwapRouter02 public immutable swapRouter; // Uniswap v3 SwapRouter02 (Sepolia)
-    address public immutable tokenA; // e.g. WETH
-    address public immutable tokenB; // e.g. USDC
+/**
+ * @title ShadowSwapVault
+ * @notice Confidential batched swaps on top of *unmodified* Uniswap v3.
+ *
+ * Users deposit a public ERC-20 into a shared pool, then submit **encrypted**
+ * swap orders. Individual order amounts, per-user balances and per-user output
+ * shares are stored as Nox encrypted handles (euint256) and never appear in
+ * plaintext on-chain. Only the **aggregate** amount for an epoch is revealed
+ * (via Nox public decryption), which is what settles as a single Uniswap swap —
+ * so an observer sees one anonymous net trade, not who ordered what.
+ *
+ * Flow:
+ *   1. deposit(amount)                    — public transfer, encrypted balance credit
+ *   2. submitOrder(encAmount, proof)      — encrypted intent, debits encrypted balance
+ *   3. requestSettlement()                — mark the epoch aggregate publicly decryptable
+ *   4. settleEpoch(netAmountIn, minOut)   — keeper passes the decrypted aggregate; ONE
+ *                                           Uniswap swap; pro-rata shares credited (encrypted)
+ *   5. requestClaim() / finalizeClaim()   — reveal caller's own output, then withdraw
+ *
+ * The keeper (owner) only ever learns aggregates and per-user amounts the user
+ * themselves chose to reveal for withdrawal — never the full order book.
+ */
+contract ShadowSwapVault is Ownable, ReentrancyGuard {
+    ISwapRouter02 public immutable swapRouter;
+    IERC20 public immutable tokenIn; // e.g. WETH
+    IERC20 public immutable tokenOut; // e.g. USDC
     uint24 public immutable poolFee; // e.g. 3000 (0.3%)
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Confidential state (HANDLES — encrypted, never plaintext on-chain)
-    // ──────────────────────────────────────────────────────────────────────
-
-    /// @dev user => token => encrypted balance handle
-    mapping(address => mapping(address => euint128)) private encBalance;
+    uint256 public currentEpoch;
+    uint256 public minBatchSize = 2; // k-anonymity: never settle a batch that de-anonymizes
 
     struct Order {
         address user;
-        address tokenIn; // public: which side of the single pair
-        euint128 encAmountIn; // PRIVATE: how much the user is swapping
+        euint256 amountIn; // PRIVATE encrypted order amount
     }
 
-    /// @dev epochId => list of encrypted orders queued for that batch
-    mapping(uint256 => Order[]) private epochOrders;
+    mapping(uint256 => Order[]) private _orders;
+    mapping(uint256 => euint256) private _epochTotalIn; // PRIVATE encrypted aggregate per epoch
+    mapping(uint256 => bool) public settled;
 
-    uint256 public currentEpoch;
+    mapping(address => euint256) private _encDepositIn; // PRIVATE encrypted deposited balance
+    mapping(address => euint256) private _encOut; // PRIVATE encrypted claimable output
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Events (must NOT leak private amounts)
-    // ──────────────────────────────────────────────────────────────────────
-    event Deposited(address indexed user, address indexed token);
+    event Deposited(address indexed user, uint256 amount);
     event OrderSubmitted(address indexed user, uint256 indexed epoch);
-    event EpochSettled(uint256 indexed epoch, address tokenIn, uint256 netAmountIn, uint256 amountOut);
-    event Withdrawn(address indexed user, address indexed token);
+    event RevealRequested(uint256 indexed epoch);
+    event EpochSettled(uint256 indexed epoch, uint256 netAmountIn, uint256 amountOut);
+    event ClaimRevealRequested(address indexed user);
+    event Claimed(address indexed user, uint256 amount);
 
-    constructor(address _router, address _tokenA, address _tokenB, uint24 _poolFee) {
-        swapRouter = ISwapRouter02(_router);
-        tokenA = _tokenA;
-        tokenB = _tokenB;
-        poolFee = _poolFee;
+    constructor(address router, address tokenIn_, address tokenOut_, uint24 fee)
+        Ownable(msg.sender)
+    {
+        require(router != address(0) && tokenIn_ != address(0) && tokenOut_ != address(0), "zero addr");
+        swapRouter = ISwapRouter02(router);
+        tokenIn = IERC20(tokenIn_);
+        tokenOut = IERC20(tokenOut_);
+        poolFee = fee;
+    }
+
+    // ── internal: encrypted handles default to an uninitialized zero handle ──
+    function _ensureInit(euint256 v) private returns (euint256) {
+        if (!Nox.isInitialized(v)) {
+            v = Nox.toEuint256(0);
+        }
+        return v;
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // 1. DEPOSIT — pull ERC-20 in, credit an ENCRYPTED balance
+    // 1. DEPOSIT — public ERC-20 in, encrypted balance credit
     // ──────────────────────────────────────────────────────────────────────
-    /// @param token       tokenA or tokenB
-    /// @param amount      plaintext transfer amount (visible — it's an ERC-20 transfer)
-    /// @param encAmount   the same amount as an encrypted handle to add to the private balance
-    function deposit(address token, uint256 amount, euint128 encAmount) external {
-        require(token == tokenA || token == tokenB, "bad token");
-        IERC20(token).transferFrom(msg.sender, address(this), amount);
+    function deposit(uint256 amount) external nonReentrant {
+        require(amount > 0, "amount=0");
+        require(tokenIn.transferFrom(msg.sender, address(this), amount), "transferFrom failed");
 
-        // Phase 2: encBalance[msg.sender][token] = Nox.add(encBalance[...], encAmount);
-        //          Nox.allow(encBalance[msg.sender][token], msg.sender); // ACL: owner can decrypt
-        encAmount; // silence unused in skeleton
-        emit Deposited(msg.sender, token);
+        euint256 bal = _ensureInit(_encDepositIn[msg.sender]);
+        bal = Nox.add(bal, Nox.toEuint256(amount));
+        Nox.allowThis(bal);
+        Nox.allow(bal, msg.sender);
+        _encDepositIn[msg.sender] = bal;
+
+        emit Deposited(msg.sender, amount);
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // 2. SUBMIT ORDER — queue an ENCRYPTED swap intent for the current epoch
+    // 2. SUBMIT ORDER — encrypted swap intent, queued for the current epoch
     // ──────────────────────────────────────────────────────────────────────
-    /// @param tokenIn      which side is being sold (public: it's the pair direction)
-    /// @param encAmountIn  PRIVATE amount to swap (encrypted handle)
-    function submitOrder(address tokenIn, euint128 encAmountIn) external {
-        require(tokenIn == tokenA || tokenIn == tokenB, "bad token");
+    /// @param encAmountIn encrypted order amount (produced client-side by the Nox JS SDK)
+    /// @param proof        input proof binding the handle to msg.sender
+    function submitOrder(externalEuint256 encAmountIn, bytes calldata proof) external {
+        euint256 amt = Nox.fromExternal(encAmountIn, proof);
+        euint256 bal = _ensureInit(_encDepositIn[msg.sender]);
 
-        // Phase 2 checks (all on encrypted data inside the TEE):
-        //   ebool ok = Nox.le(encAmountIn, encBalance[msg.sender][tokenIn]);
-        //   Nox.requireEnc(ok);
-        //   encBalance[msg.sender][tokenIn] = Nox.sub(encBalance[...], encAmountIn);
+        // Clamp to available balance entirely on encrypted data: if amt > bal, use 0.
+        ebool ok = Nox.le(amt, bal);
+        amt = Nox.select(ok, amt, Nox.toEuint256(0));
 
-        epochOrders[currentEpoch].push(
-            Order({ user: msg.sender, tokenIn: tokenIn, encAmountIn: encAmountIn })
-        );
+        bal = Nox.sub(bal, amt);
+        Nox.allowThis(bal);
+        Nox.allow(bal, msg.sender);
+        _encDepositIn[msg.sender] = bal;
+
+        Nox.allowThis(amt);
+        _orders[currentEpoch].push(Order({user: msg.sender, amountIn: amt}));
+
+        euint256 total = _ensureInit(_epochTotalIn[currentEpoch]);
+        total = Nox.add(total, amt);
+        Nox.allowThis(total);
+        _epochTotalIn[currentEpoch] = total;
+
         emit OrderSubmitted(msg.sender, currentEpoch);
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // 3. SETTLE EPOCH — net orders in the TEE, do ONE public Uniswap swap
+    // 3. REQUEST SETTLEMENT — reveal ONLY the epoch aggregate
     // ──────────────────────────────────────────────────────────────────────
-    /// @dev v1 (MVP): batches SAME-direction orders (tokenIn == tokenA) into a
-    ///      single aggregate swap. v2 (stretch): net opposite directions and
-    ///      only swap the remainder. See docs/design.md.
-    function settleEpoch(uint256 minAmountOut) external {
+    function requestSettlement() external onlyOwner {
+        require(_orders[currentEpoch].length >= minBatchSize, "batch too small");
+        Nox.allowPublicDecryption(_epochTotalIn[currentEpoch]);
+        emit RevealRequested(currentEpoch);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 4. SETTLE — one public Uniswap swap of the aggregate, private redistribution
+    // ──────────────────────────────────────────────────────────────────────
+    /// @param netAmountIn the decrypted epoch aggregate (read off-chain by the keeper
+    ///                     after requestSettlement, via the Nox handle gateway)
+    /// @param minAmountOut Uniswap slippage floor
+    function settleEpoch(uint256 netAmountIn, uint256 minAmountOut) external onlyOwner nonReentrant {
         uint256 epoch = currentEpoch;
-        Order[] storage orders = epochOrders[epoch];
-        require(orders.length > 0, "empty epoch");
+        require(!settled[epoch], "already settled");
+        require(netAmountIn > 0, "net=0");
+        Order[] storage orders = _orders[epoch];
+        require(orders.length >= minBatchSize, "batch too small");
 
-        // Phase 2: sum encrypted amounts, then DECRYPT ONLY THE AGGREGATE.
-        //   euint128 encTotal = 0;
-        //   for (...) encTotal = Nox.add(encTotal, orders[i].encAmountIn);
-        //   uint256 netAmountIn = Nox.decrypt(encTotal); // only the total is revealed
-        uint256 netAmountIn = _aggregateForSkeleton(orders);
-
-        // Approve + execute ONE swap on the unmodified Uniswap router.
-        IERC20(tokenA).approve(address(swapRouter), netAmountIn);
+        // ── ONE aggregate swap on the UNMODIFIED Uniswap router ──
+        tokenIn.approve(address(swapRouter), netAmountIn);
         uint256 amountOut = swapRouter.exactInputSingle(
             ISwapRouter02.ExactInputSingleParams({
-                tokenIn: tokenA,
-                tokenOut: tokenB,
+                tokenIn: address(tokenIn),
+                tokenOut: address(tokenOut),
                 fee: poolFee,
                 recipient: address(this),
                 amountIn: netAmountIn,
@@ -160,43 +179,65 @@ contract ShadowSwapVault {
             })
         );
 
-        // Phase 2: redistribute amountOut PRO-RATA into encrypted balances,
-        // computed inside the TEE so individual shares stay private:
-        //   for (...) {
-        //     euint128 share = Nox.mulDiv(orders[i].encAmountIn, amountOut, encTotal);
-        //     encBalance[orders[i].user][tokenB] = Nox.add(encBalance[...], share);
-        //   }
+        // ── Pro-rata redistribution, computed on encrypted data ──
+        // share_i = amountIn_i * amountOut / totalIn   (each share stays encrypted)
+        euint256 total = _epochTotalIn[epoch];
+        euint256 encAmountOut = Nox.toEuint256(amountOut);
+        uint256 n = orders.length;
+        for (uint256 i = 0; i < n; i++) {
+            euint256 share = Nox.div(Nox.mul(orders[i].amountIn, encAmountOut), total);
+            euint256 cur = _ensureInit(_encOut[orders[i].user]);
+            cur = Nox.add(cur, share);
+            Nox.allowThis(cur);
+            Nox.allow(cur, orders[i].user);
+            _encOut[orders[i].user] = cur;
+        }
 
+        settled[epoch] = true;
         currentEpoch = epoch + 1;
-        emit EpochSettled(epoch, tokenA, netAmountIn, amountOut);
+        emit EpochSettled(epoch, netAmountIn, amountOut);
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // 4. WITHDRAW — check encrypted balance, transfer out
+    // 5. CLAIM — user reveals their own output, keeper finalizes the transfer
     // ──────────────────────────────────────────────────────────────────────
-    function withdraw(address token, uint256 amount, euint128 encAmount) external {
-        // Phase 2:
-        //   ebool ok = Nox.le(encAmount, encBalance[msg.sender][token]);
-        //   Nox.requireEnc(ok);
-        //   encBalance[msg.sender][token] = Nox.sub(encBalance[...], encAmount);
-        encAmount; // silence unused in skeleton
-        IERC20(token).transfer(msg.sender, amount);
-        emit Withdrawn(msg.sender, token);
+    function requestClaim() external {
+        require(Nox.isInitialized(_encOut[msg.sender]), "nothing to claim");
+        Nox.allowPublicDecryption(_encOut[msg.sender]);
+        emit ClaimRevealRequested(msg.sender);
+    }
+
+    /// @param amount the decrypted claimable output (read off-chain after requestClaim)
+    function finalizeClaim(address user, uint256 amount) external onlyOwner nonReentrant {
+        require(amount > 0, "amount=0");
+        _encOut[user] = Nox.toEuint256(0);
+        Nox.allowThis(_encOut[user]);
+        require(tokenOut.transfer(user, amount), "transfer failed");
+        emit Claimed(user, amount);
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // 5. PRIVATE VIEW — return the caller's own encrypted balance handle
+    // Views — return the caller's own handles (decryptable only via their ACL)
     // ──────────────────────────────────────────────────────────────────────
-    /// @dev The returned handle is only decryptable by an address on its ACL,
-    ///      so users read their own balance while it stays hidden from others.
-    function myBalanceHandle(address token) external view returns (euint128) {
-        return encBalance[msg.sender][token];
+    function myDepositHandle() external view returns (euint256) {
+        return _encDepositIn[msg.sender];
     }
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Skeleton-only helper — REMOVED in Phase 2 (replaced by TEE aggregation)
-    // ──────────────────────────────────────────────────────────────────────
-    function _aggregateForSkeleton(Order[] storage) private pure returns (uint256) {
-        return 0; // placeholder; real aggregate comes from Nox.decrypt(encTotal)
+    function myOutHandle() external view returns (euint256) {
+        return _encOut[msg.sender];
+    }
+
+    function epochTotalHandle(uint256 epoch) external view returns (euint256) {
+        return _epochTotalIn[epoch];
+    }
+
+    function ordersInEpoch(uint256 epoch) external view returns (uint256) {
+        return _orders[epoch].length;
+    }
+
+    // ── admin ──
+    function setMinBatchSize(uint256 n) external onlyOwner {
+        require(n >= 1, "min 1");
+        minBatchSize = n;
     }
 }

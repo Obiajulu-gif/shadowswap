@@ -25,10 +25,10 @@ export default function Hero() {
           </p>
 
           <div className="mt-9 flex flex-wrap items-center gap-4">
-            <button className="clay-btn text-base">
+            <a href="/app" className="clay-btn text-base">
               Launch App
               <ArrowRightIcon className="h-5 w-5" />
-            </button>
+            </a>
             <a href="#how-it-works" className="clay-btn-ghost text-base">
               See how it works
             </a>
