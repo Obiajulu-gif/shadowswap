@@ -1,7 +1,12 @@
 import { SEPOLIA } from "./constants";
 
-/** ShadowSwapVault address — set after deploying (see contracts/). */
-export const VAULT_ADDRESS = (process.env.NEXT_PUBLIC_VAULT_ADDRESS || "") as
+/** Live ShadowSwapVault on Ethereum Sepolia. Override with env for redeploys. */
+export const DEFAULT_SEPOLIA_VAULT_ADDRESS =
+  "0x037D0Ea2dBD362D3dc186f6311591D969b9522e0" as const;
+
+export const VAULT_ADDRESS = (
+  process.env.NEXT_PUBLIC_VAULT_ADDRESS || DEFAULT_SEPOLIA_VAULT_ADDRESS
+) as
   | `0x${string}`
   | "";
 
