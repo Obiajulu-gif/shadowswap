@@ -70,10 +70,13 @@ Requirements: Node.js ≥ 20.
 git clone https://github.com/Obiajulu-gif/shadowswap.git
 cd shadowswap
 npm install
+cp .env.local.example .env.local
 npm run dev
 ```
 
-Open <http://localhost:3000>.
+Open <http://localhost:3000>. The frontend is configured for the live
+ShadowSwapVault on Ethereum Sepolia by default, so connect a Sepolia-funded
+wallet to use the app.
 
 ## 🔐 Contracts (Hardhat + Nox)
 

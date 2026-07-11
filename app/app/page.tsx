@@ -11,7 +11,7 @@ import {
   useReadContract,
   useWalletClient,
 } from "wagmi";
-import { parseUnits, parseEther, formatUnits, erc20Abi, maxUint256 } from "viem";
+import { parseUnits, formatUnits, erc20Abi, maxUint256 } from "viem";
 import { shadowSwapVaultAbi } from "@/lib/abi";
 import {
   VAULT_ADDRESS,
@@ -41,6 +41,45 @@ function short(a?: string) {
   return a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "";
 }
 
+function getErrorMessage(error: unknown) {
+  return error instanceof Error
+    ? error.message.split("\n")[0]
+    : "Something went wrong. Please try again.";
+}
+
+function cleanAmountInput(value: string) {
+  const [whole, ...decimalParts] = value
+    .replace(/,/g, ".")
+    .replace(/[^0-9.]/g, "")
+    .split(".");
+  const decimals = decimalParts.join("");
+  return decimalParts.length > 0 ? `${whole}.${decimals}` : whole;
+}
+
+function parseActionAmount(amount: string, decimals: number, symbol: string) {
+  if (!amount.trim()) {
+    return { error: `Enter an amount of ${symbol} first.` } as const;
+  }
+
+  try {
+    const value = parseUnits(amount, decimals);
+    if (value <= 0n) {
+      return { error: `Enter an amount greater than 0 ${symbol}.` } as const;
+    }
+    return { value } as const;
+  } catch {
+    return { error: `Enter a valid ${symbol} amount.` } as const;
+  }
+}
+
+function hasEncryptedHandle(handle: unknown): handle is `0x${string}` {
+  return (
+    typeof handle === "string" &&
+    /^0x[0-9a-fA-F]{64}$/.test(handle) &&
+    !/^0x0{64}$/i.test(handle)
+  );
+}
+
 /** Ensures the wallet is on Sepolia before a transaction; switches if not. */
 function useSepoliaGuard() {
   const { chainId } = useAccount();
@@ -50,6 +89,47 @@ function useSepoliaGuard() {
       await switchChainAsync({ chainId: SEPOLIA_CHAIN_ID });
     }
   };
+}
+
+function useActionPreflight(setStatus: (status: Status) => void) {
+  const { isConnected } = useAccount();
+  const { data: walletClient } = useWalletClient();
+  const ensureSepolia = useSepoliaGuard();
+
+  async function ensureReady({
+    requireVault = true,
+    requireWalletClient = false,
+  }: {
+    requireVault?: boolean;
+    requireWalletClient?: boolean;
+  } = {}) {
+    if (!isConnected) {
+      setStatus({ kind: "err", msg: "Connect your wallet first." });
+      return false;
+    }
+
+    if (requireVault && !isVaultConfigured) {
+      setStatus({
+        kind: "err",
+        msg: "Set NEXT_PUBLIC_VAULT_ADDRESS before using this action.",
+      });
+      return false;
+    }
+
+    if (requireWalletClient && !walletClient) {
+      setStatus({
+        kind: "err",
+        msg: "Wallet connection is still loading. Try again in a moment.",
+      });
+      return false;
+    }
+
+    setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted..." });
+    await ensureSepolia();
+    return true;
+  }
+
+  return { ensureReady, walletClient };
 }
 
 export default function AppPage() {
@@ -283,18 +363,21 @@ function EpochStatus() {
 /* ───────────────────────── Deposit ───────────────────────── */
 
 function DepositCard() {
-  const { isConnected } = useAccount();
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const { writeContractAsync } = useWriteContract();
-  const ensureSepolia = useSepoliaGuard();
-  const disabled = !isConnected || !isVaultConfigured || !amount;
-  const noAmount = !isConnected || !amount;
+  const preflight = useActionPreflight(setStatus);
+  const busy = status.kind === "pending";
 
   async function wrap() {
+    const parsed = parseActionAmount(amount, 18, "ETH");
+    if ("error" in parsed) {
+      setStatus({ kind: "err", msg: parsed.error });
+      return;
+    }
+
     try {
-      setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted…" });
-      await ensureSepolia();
+      if (!(await preflight.ensureReady({ requireVault: false }))) return;
       setStatus({ kind: "pending", msg: `Wrapping ${amount} ETH → WETH…` });
       await writeContractAsync({
         chainId: SEPOLIA_CHAIN_ID,
@@ -303,18 +386,17 @@ function DepositCard() {
           { type: "function", name: "deposit", stateMutability: "payable", inputs: [], outputs: [] },
         ],
         functionName: "deposit",
-        value: parseEther(amount),
+        value: parsed.value,
       });
       setStatus({ kind: "ok", msg: `Wrapped ${amount} ETH. Now Approve + Deposit.` });
     } catch (e) {
-      setStatus({ kind: "err", msg: (e as Error).message.split("\n")[0] });
+      setStatus({ kind: "err", msg: getErrorMessage(e) });
     }
   }
 
   async function approve() {
     try {
-      setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted…" });
-      await ensureSepolia();
+      if (!(await preflight.ensureReady())) return;
       setStatus({ kind: "pending", msg: "Approving WETH…" });
       await writeContractAsync({
         chainId: SEPOLIA_CHAIN_ID,
@@ -325,25 +407,30 @@ function DepositCard() {
       });
       setStatus({ kind: "ok", msg: "WETH approved. You can deposit now." });
     } catch (e) {
-      setStatus({ kind: "err", msg: (e as Error).message.split("\n")[0] });
+      setStatus({ kind: "err", msg: getErrorMessage(e) });
     }
   }
 
   async function deposit() {
+    const parsed = parseActionAmount(amount, TOKEN_IN.decimals, TOKEN_IN.symbol);
+    if ("error" in parsed) {
+      setStatus({ kind: "err", msg: parsed.error });
+      return;
+    }
+
     try {
-      setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted…" });
-      await ensureSepolia();
+      if (!(await preflight.ensureReady())) return;
       setStatus({ kind: "pending", msg: "Depositing…" });
       await writeContractAsync({
         ...vault,
         chainId: SEPOLIA_CHAIN_ID,
         functionName: "deposit",
-        args: [parseUnits(amount, TOKEN_IN.decimals)],
+        args: [parsed.value],
       });
       setStatus({ kind: "ok", msg: "Deposited. Balance credited (encrypted)." });
       setAmount("");
     } catch (e) {
-      setStatus({ kind: "err", msg: (e as Error).message.split("\n")[0] });
+      setStatus({ kind: "err", msg: getErrorMessage(e) });
     }
   }
 
@@ -363,17 +450,17 @@ function DepositCard() {
       />
       <button
         onClick={wrap}
-        disabled={noAmount}
+        disabled={busy}
         className="clay-btn-ghost mt-4 w-full text-sm disabled:opacity-40"
       >
         <BoltIcon className="h-4 w-4 text-cyan-glow" />
         Need WETH? Wrap {amount || "0"} ETH → WETH
       </button>
       <div className="mt-3 flex gap-3">
-        <button onClick={approve} disabled={disabled} className="clay-btn-ghost flex-1 disabled:opacity-40">
+        <button onClick={approve} disabled={busy} className="clay-btn-ghost flex-1 disabled:opacity-40">
           Approve
         </button>
-        <button onClick={deposit} disabled={disabled} className="clay-btn flex-1 disabled:opacity-40">
+        <button onClick={deposit} disabled={busy} className="clay-btn flex-1 disabled:opacity-40">
           Deposit
         </button>
       </div>
@@ -385,25 +472,27 @@ function DepositCard() {
 /* ───────────────────────── Private swap (encrypted order) ───────────────────────── */
 
 function PrivateSwapCard() {
-  const { isConnected } = useAccount();
-  const { data: walletClient } = useWalletClient();
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const { writeContractAsync } = useWriteContract();
-  const ensureSepolia = useSepoliaGuard();
-  const disabled = !isConnected || !isVaultConfigured || !amount;
+  const preflight = useActionPreflight(setStatus);
+  const busy = status.kind === "pending";
 
   async function submit() {
-    if (!walletClient) return;
+    const parsed = parseActionAmount(amount, TOKEN_IN.decimals, TOKEN_IN.symbol);
+    if ("error" in parsed) {
+      setStatus({ kind: "err", msg: parsed.error });
+      return;
+    }
+
     try {
-      setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted…" });
-      await ensureSepolia();
+      if (!(await preflight.ensureReady({ requireWalletClient: true }))) return;
+      if (!preflight.walletClient) return;
       setStatus({ kind: "pending", msg: "Encrypting order client-side…" });
-      const raw = parseUnits(amount, TOKEN_IN.decimals);
       const { handle, handleProof } = await encryptAmount(
-        walletClient,
+        preflight.walletClient,
         vault.address,
-        raw
+        parsed.value
       );
       setStatus({ kind: "pending", msg: "Submitting encrypted order…" });
       await writeContractAsync({
@@ -418,7 +507,7 @@ function PrivateSwapCard() {
       });
       setAmount("");
     } catch (e) {
-      setStatus({ kind: "err", msg: (e as Error).message.split("\n")[0] });
+      setStatus({ kind: "err", msg: getErrorMessage(e) });
     }
   }
 
@@ -443,7 +532,7 @@ function PrivateSwapCard() {
         symbol={`${TOKEN_IN.symbol} → ${TOKEN_OUT.symbol}`}
         label="Order amount (hidden)"
       />
-      <button onClick={submit} disabled={disabled} className="clay-btn mt-4 w-full disabled:opacity-40">
+      <button onClick={submit} disabled={busy} className="clay-btn mt-4 w-full disabled:opacity-40">
         <SendIcon className="h-5 w-5" />
         Encrypt &amp; submit order
       </button>
@@ -456,12 +545,11 @@ function PrivateSwapCard() {
 
 function BalancesCard() {
   const { address, isConnected } = useAccount();
-  const { data: walletClient } = useWalletClient();
   const [deposit, setDeposit] = useState<string>();
   const [out, setOut] = useState<string>();
   const [status, setStatus] = useState<Status>({ kind: "idle" });
-
-  const ensureSepolia = useSepoliaGuard();
+  const preflight = useActionPreflight(setStatus);
+  const busy = status.kind === "pending";
   const { data: depositHandle } = useReadContract({
     ...vault,
     chainId: SEPOLIA_CHAIN_ID,
@@ -478,22 +566,28 @@ function BalancesCard() {
   });
 
   async function reveal() {
-    if (!walletClient) return;
     try {
-      setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted…" });
-      await ensureSepolia();
+      if (!(await preflight.ensureReady({ requireWalletClient: true }))) return;
+      if (!preflight.walletClient) return;
+      const hasDeposit = hasEncryptedHandle(depositHandle);
+      const hasOut = hasEncryptedHandle(outHandle);
+      if (!hasDeposit && !hasOut) {
+        setStatus({ kind: "err", msg: "No private balance handles found yet." });
+        return;
+      }
+
       setStatus({ kind: "pending", msg: "Decrypting your handles…" });
-      if (depositHandle) {
-        const v = await decryptHandle(walletClient, depositHandle as `0x${string}`);
+      if (hasDeposit) {
+        const v = await decryptHandle(preflight.walletClient, depositHandle);
         setDeposit(formatUnits(v, TOKEN_IN.decimals));
       }
-      if (outHandle) {
-        const v = await decryptHandle(walletClient, outHandle as `0x${string}`);
+      if (hasOut) {
+        const v = await decryptHandle(preflight.walletClient, outHandle);
         setOut(formatUnits(v, TOKEN_OUT.decimals));
       }
       setStatus({ kind: "ok", msg: "Decrypted locally — only you can see this." });
     } catch (e) {
-      setStatus({ kind: "err", msg: (e as Error).message.split("\n")[0] });
+      setStatus({ kind: "err", msg: getErrorMessage(e) });
     }
   }
 
@@ -523,7 +617,7 @@ function BalancesCard() {
       </div>
       <button
         onClick={reveal}
-        disabled={!isConnected || !isVaultConfigured}
+        disabled={busy}
         className="clay-btn-ghost mt-4 w-full disabled:opacity-40"
       >
         <EyeIcon className="h-5 w-5" /> Reveal (for my eyes only)
@@ -536,15 +630,14 @@ function BalancesCard() {
 /* ───────────────────────── Claim ───────────────────────── */
 
 function ClaimCard() {
-  const { isConnected } = useAccount();
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const { writeContractAsync } = useWriteContract();
-  const ensureSepolia = useSepoliaGuard();
+  const preflight = useActionPreflight(setStatus);
+  const busy = status.kind === "pending";
 
   async function requestClaim() {
     try {
-      setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted…" });
-      await ensureSepolia();
+      if (!(await preflight.ensureReady())) return;
       setStatus({ kind: "pending", msg: "Requesting claim reveal…" });
       await writeContractAsync({
         ...vault,
@@ -556,7 +649,7 @@ function ClaimCard() {
         msg: "Reveal requested. Keeper finalizes your withdrawal.",
       });
     } catch (e) {
-      setStatus({ kind: "err", msg: (e as Error).message.split("\n")[0] });
+      setStatus({ kind: "err", msg: getErrorMessage(e) });
     }
   }
 
@@ -574,7 +667,7 @@ function ClaimCard() {
       </p>
       <button
         onClick={requestClaim}
-        disabled={!isConnected || !isVaultConfigured}
+        disabled={busy}
         className="clay-btn w-full disabled:opacity-40"
       >
         Request claim
@@ -587,15 +680,14 @@ function ClaimCard() {
 /* ───────────────────────── Keeper (owner) actions ───────────────────────── */
 
 function KeeperCard() {
-  const { isConnected } = useAccount();
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const { writeContractAsync } = useWriteContract();
-  const ensureSepolia = useSepoliaGuard();
+  const preflight = useActionPreflight(setStatus);
+  const busy = status.kind === "pending";
 
   async function requestSettlement() {
     try {
-      setStatus({ kind: "pending", msg: "Switch to Sepolia if prompted…" });
-      await ensureSepolia();
+      if (!(await preflight.ensureReady())) return;
       setStatus({ kind: "pending", msg: "Marking aggregate decryptable…" });
       await writeContractAsync({
         ...vault,
@@ -604,7 +696,7 @@ function KeeperCard() {
       });
       setStatus({ kind: "ok", msg: "Aggregate revealed. Run settle off-chain." });
     } catch (e) {
-      setStatus({ kind: "err", msg: (e as Error).message.split("\n")[0] });
+      setStatus({ kind: "err", msg: getErrorMessage(e) });
     }
   }
 
@@ -623,7 +715,7 @@ function KeeperCard() {
       </p>
       <button
         onClick={requestSettlement}
-        disabled={!isConnected || !isVaultConfigured}
+        disabled={busy}
         className="clay-btn-ghost w-full disabled:opacity-40"
       >
         Request settlement
@@ -652,7 +744,7 @@ function AmountInput({
         <p className="mb-1 text-xs text-ink-faint">{label}</p>
         <input
           value={value}
-          onChange={(e) => onChange(e.target.value.replace(/[^0-9.]/g, ""))}
+          onChange={(e) => onChange(cleanAmountInput(e.target.value))}
           inputMode="decimal"
           placeholder="0.0"
           className="w-full bg-transparent font-display text-2xl font-bold text-ink outline-none placeholder:text-ink-faint"
